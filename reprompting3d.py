@@ -15,7 +15,7 @@ class NiiImageEditor:
         print(is_folder)
         if is_folder:
             # self.nii_data = utils.padtocube(self.load_pngs_as_array(file_path)) # self.load_pngs_as_array(file_path)
-            self.nii_data = utils.padtocube(utils.load3dmatrix(file_path, 'png'))
+            self.nii_data = utils.padtocube(utils.load3dmatrix(file_path, 'dcm'))
         else:
             nii_file = nib.load(file_path)
             self.nii_data = nii_file.get_fdata()

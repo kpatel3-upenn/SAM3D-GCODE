@@ -8,10 +8,13 @@ import math
 import time
 import tqdm
 import argparse
+import RescaleMaskedDICOM
+import RegionBasedVariableDensityAlgorithm
+import DicomToGCode
+from VariableDensityAlgorithms import save_dicom_series_removing_empty_slices, load_dicom_series
+from two_dim_level_set_evolution import apply_level_set_evolution_mask
 
 from segment_anything import sam_model_registry, SamPredictor
-# from sam2.build_sam import build_sam2
-# from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 import open3d as o3d
 import os
@@ -65,6 +68,7 @@ def main():
     
     # open image and get slices
     image = utils.padtocube(utils.load3dmatrix(args.path, args.datatype))
+    _, original_dicom_series = utils.load_dicom_series(args.path)
     print('image loaded')
     print(image.shape)
 
@@ -160,8 +164,6 @@ def main():
     voxsize, resolution, dilation, erosion, fillholes, distance = 1/image.shape[0], image.shape[0], 0, 0, True, 0.01  # Set default values
     
     pcd = recomposition.create_point_cloud(points, visualize=True, downsample=downsample, outliers=outliers, n_neighbors=n_neighbors, radius=radius)
-    # mask = recomposition.voxel_density_mask(pcd, vox_size=voxsize, resolution=resolution, dilation=dilation, erosion=erosion, fill_holes=fillholes, distance=distance, shape=transformed_img.shape)
-    # recomposition.draw_orthoplanes(image, mask)
 
     while running:
         user_input = input("Enter a command (evaluate, downsample, outliers, done): ").lower()  # Convert input to lowercase
@@ -204,69 +206,45 @@ def main():
             print("Invalid input. Please enter one of (voxsize, resolution, dilation, erosion, fillholes), (evaluate), or (done) if finished.")
     
     mask = recomposition.voxel_density_mask(pcd, vox_size = voxsize, resolution = resolution, dilation = dilation, erosion = erosion, fill_holes = fillholes, distance=distance)
-    recomposition.draw_orthoplanes(image, mask)
-    # # refinement loop
-    # print('voxel mask refinement')
-    # valid_inputs = ['evaluate', 'voxsize', 'resolution', 'dilation', 'erosion', 'fillholes', 'done']
-    # running = True
-    # voxsize, resolution, dilation, erosion, fillholes = 1/image.shape[0], image.shape[0], 2, 2, True  # Set default values
-    # mask = recomposition.voxel_density_mask(pcd, vox_size = voxsize, resolution = resolution, dilation = dilation, erosion = erosion, fill_holes = fillholes)
-    # recomposition.draw_orthoplanes(image, mask)
-    
-    # while running:
-    #     user_input = input("Enter a command (evaluate, voxsize, resolution, dilation, erosion, fillholes, done): ").lower()  # Convert input to lowercase
-    #     if user_input in valid_inputs:
-    #         # Perform actions based on user input
-    #         if user_input == 'voxsize':
-    #             vox_size_input = input(f"Current voxel size = {voxsize}, enter a new voxel size: ").lower()
-    #             if vox_size_input == '':
-    #                 vox_size_input = voxsize
-    #             assert float(vox_size_input) > 0 and float(vox_size_input) < 1, "Voxel size must be greater than 0 and less than 1."
-    #             voxsize = float(vox_size_input)
-    #         elif user_input == 'resolution':
-    #             resolution_input = input(f"Current resolution = {resolution}, enter a new resolution: ").lower()
-    #             if resolution_input == '':
-    #                 resolution_input = resolution
-    #             assert int(resolution_input) > 0, "Resolution must be an integer greater than 0."
-    #             resolution = int(resolution_input)
-    #         elif user_input == 'dilation':
-    #             dilation_input = input(f"Current dilation = {dilation}, enter a new dilation: ").lower()
-    #             if dilation_input == '':
-    #                 dilation_input = dilation
-    #             assert int(dilation_input) >= 0, "dilation must be an integer greater than or equal to 0."
-    #             dilation = int(dilation_input)
-    #         elif user_input == 'erosion':
-    #             erosion_input = input(f"Current erosion = {erosion}, enter a new erosion: ").lower()
-    #             if erosion_input == '':
-    #                 erosion_input = erosion
-    #             assert int(erosion_input) >= 0, "erosion must be an integer greater than or equal to 0."
-    #             erosion = int(erosion_input)
-    #         elif user_input == 'fillholes':
-    #             if fillholes:
-    #                 print(f"Fill holes was set to True. Fill holes is now False.")
-    #                 fillholes = False
-    #             else:
-    #                 print(f"Fill holes was set to False. Fill holes is now True.")
-    #                 fillholes = True
-    #         elif user_input == 'done':
-    #             running = False
-    #         elif user_input == 'evaluate':
-    #             mask = recomposition.voxel_density_mask(pcd, vox_size = voxsize, resolution = resolution, dilation = dilation, erosion = erosion, fill_holes = fillholes)
-    #             recomposition.draw_orthoplanes(image, mask)
-    #             print("Mask created.")
-    #     else:
-    #         print("Invalid input. Please enter one of (voxsize, resolution, dilation, erosion, fillholes), (evaluate), or (done) if finished.")
-            
-    # save mask
-    savename = input("name to save w/out extension: ")
-    if len(args.outdir) == 0:
-        args.outdir = "."
-    utils.save_mrc(image, f'{args.outdir}/{savename}_image.mrc')
-    utils.save_mrc(mask, f'{args.outdir}/{savename}_mask.mrc')
-    
+        
+    print('Variable Density Printing Pipeline Started')
+    # All of the intermediate files are going to be stored in a temp folder in the output path
+    # The temp folder will be deleted at the end of the function
+    temp_path_for_intermediates = args.outdir + '/temp'
+    if os.path.exists(temp_path_for_intermediates):
+        os.system(f'rm -r {temp_path_for_intermediates}')
+    os.makedirs(temp_path_for_intermediates)
+    print('Temporary folder created')
+
+    print('Creating density regions')
+    low_density_roi = apply_level_set_evolution_mask(roi)
+    region_based_roi = RegionBasedVariableDensityAlgorithm.create_region_based_variable_density_roi_fractional_skip_with_block_size(
+            mask,
+            RescaleMaskedDICOM.simple_rescale_dicom_array_to_16bit(low_density_roi),
+            block_size=2
+    )
+    print('Region based roi computed')
+
+    # Save low and high density region masks
+    region_based_roi_output_path = temp_path_for_intermediates + '/density_region_based_roi'
+    save_dicom_series_removing_empty_slices(region_based_roi, original_dicom_series, region_based_roi_output_path)
+
+    print('Final DICOM saved')
+
+    print('Calling Dicom2GCode')
+    # Generate GCODE using DicomToGCode
+    params_path = '/Users/krunalpatel/Medicine/Rajapakse_Lab/BioPrinting/dicom2gcode/params.xml'
+    gcode_filename = 'autogen_output.gcode'
+    DicomToGCode.generate_params_xml(params_path, region_based_roi_output_path, gcode_filename)
+    dicom_to_gcode_path = '/Users/krunalpatel/Medicine/Rajapakse_Lab/BioPrinting/dicom2gcode/'
+    DicomToGCode.call_dicom_2_gcode_java(dicom_to_gcode_path, params_path)
+
+    # Delete temp folder
+    os.system(f'rm -r {temp_path_for_intermediates}')
+
     elapsed = int(time.time()-starttime)
     print(f"Total time elapsed: {elapsed//60} minutes, {elapsed%60} seconds.")
-        
+
 
 if __name__ == "__main__":
     main()
