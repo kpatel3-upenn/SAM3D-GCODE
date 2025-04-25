@@ -217,7 +217,7 @@ def main():
     print('Temporary folder created')
 
     print('Creating density regions')
-    low_density_roi = apply_level_set_evolution_mask(roi)
+    low_density_roi = apply_level_set_evolution_mask(mask)
     region_based_roi = RegionBasedVariableDensityAlgorithm.create_region_based_variable_density_roi_fractional_skip_with_block_size(
             mask,
             RescaleMaskedDICOM.simple_rescale_dicom_array_to_16bit(low_density_roi),
