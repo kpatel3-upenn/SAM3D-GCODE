@@ -11,3 +11,4 @@ __pycache__/
 *.nii.gz
 *.gz
 segment-anything-2/
+SAM3D_GCODE/

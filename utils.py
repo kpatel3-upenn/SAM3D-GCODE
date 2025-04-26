@@ -7,12 +7,22 @@ import pydicom as dicom
 import matplotlib.pyplot as plt
 
 
+def _dicom_zcoord(ds):
+    if 'ImagePositionPatient' in ds:
+        return float(ds.ImagePositionPatient[2])
+    if 'SliceLocation' in ds:
+        return float(ds.SliceLocation)
+    return 0.0
+
 def load3dmatrix(folder, datatype):
     filepaths = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.%s' % datatype)]
     filepaths.sort()
     if datatype == "png":
         images = [Image.open(f) for f in filepaths]
     if datatype == "dcm":
+        filepaths = sorted(
+            filepaths, 
+            key=lambda fp: _dicom_zcoord(dicom.dcmread(fp, stop_before_pixels=True)))
         images = [dicom.dcmread(f).pixel_array for f in filepaths]
     image = np.stack(images, axis=-1)
     image = (image - np.amin(image)) / (np.amax(image) - np.amin(image)) * 255

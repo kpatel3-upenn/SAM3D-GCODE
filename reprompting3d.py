@@ -9,81 +9,107 @@ import utils
 
 class NiiImageEditor:
     def __init__(self, master, file_path, slice_axis=2, is_folder=True, initial_points=None, savepath='tempdir'):
+        # -------------------------------------------------------------
+        # 0)  LOAD THE VOLUME  (keeps original DICOM / NIfTI logic)
+        # -------------------------------------------------------------
         self.master = master
         if "nii" in file_path:
             is_folder = False
-        print(is_folder)
-        if is_folder:
-            # self.nii_data = utils.padtocube(self.load_pngs_as_array(file_path)) # self.load_pngs_as_array(file_path)
-            self.nii_data = utils.padtocube(utils.load3dmatrix(file_path, 'dcm'))
-        else:
-            nii_file = nib.load(file_path)
-            self.nii_data = nii_file.get_fdata()
-            self.nii_data = utils.padtocube(self.nii_data)
-        print(self.nii_data.shape)
-        self.current_slice_index = 0
-        self.pos_polylines = [[]]
-        self.neg_polylines = [[]]
-        self.current_phase = 'positive'
-        self.slices_with_points = {
-            0: set(),  # X-axis
-            1: set(),  # Y-axis
-            2: set()   # Z-axis
-        }
-        self.savepath = savepath + "/points.json"
 
+        if is_folder:
+            # original branch → DICOM folder  (utils.load3dmatrix)  or PNGs
+            # comment below shows PNG fallback, keep whichever you use.
+            # self.nii_data = utils.padtocube(self.load_pngs_as_array(file_path))
+            self.nii_data = utils.padtocube(utils.load3dmatrix(file_path, "dcm"))
+        else:
+            self.nii_data = utils.padtocube(nib.load(file_path).get_fdata())
+
+        # -------------------------------------------------------------
+        # 1)  BASIC STATE (unchanged)
+        # -------------------------------------------------------------
+        self.slice_axis           = slice_axis
+        self.current_slice_index  = 0
+        self.max_slices           = self.nii_data.shape[self.slice_axis] - 1
+
+        self.pos_polylines        = [[]]
+        self.neg_polylines        = [[]]
+        self.current_phase        = "positive"
+        self.slices_with_points   = {0: set(), 1: set(), 2: set()}
+
+        self.savepath             = os.path.join(savepath, "points.json")
+
+        # -------------------------------------------------------------
+        # 2)  COMPUTE SCALE + CANVAS SIZE  (new)
+        # -------------------------------------------------------------
+        if   slice_axis == 0:
+            h, w = self.nii_data.shape[1], self.nii_data.shape[2]
+        elif slice_axis == 1:
+            h, w = self.nii_data.shape[0], self.nii_data.shape[2]
+        else:                                   # slice_axis == 2
+            h, w = self.nii_data.shape[0], self.nii_data.shape[1]
+
+        TARGET        = 512                     # longest side on screen
+        self.scale    = min(TARGET / w, TARGET / h)
+        self.canvas_w = int(round(w * self.scale))
+        self.canvas_h = int(round(h * self.scale))
+
+        # -------------------------------------------------------------
+        # 3)  BUILD WIDGETS (one correctly sized canvas)
+        # -------------------------------------------------------------
         self.master.title("NIfTI Image Editor")
-        
-        self.canvas = tk.Canvas(master, width=512, height=512)
+
+        self.canvas = tk.Canvas(master,
+                                width=self.canvas_w,
+                                height=self.canvas_h,
+                                bg="black")
         self.canvas.pack()
 
-        self.max_slices = self.nii_data.shape[slice_axis] - 1
-        self.slice_slider = tk.Scale(master, from_=0, to=self.max_slices, orient=tk.HORIZONTAL, command=self.update_image_from_scroll)
+        self.slice_slider = tk.Scale(master, from_=0, to=self.max_slices,
+                                     orient=tk.HORIZONTAL,
+                                     command=self.update_image_from_scroll)
         self.slice_slider.pack(fill=tk.X, expand=True)
-        self.slice_axis = slice_axis
-        
-        self.canvas.bind("<Button-1>", self.add_point)
-        self.canvas.bind("<Button-3>", self.right_click_delete)
-        self.master.bind("<a>", lambda event: self.switch_phase())
-        self.master.bind("<w>", lambda event: self.start_new_polyline("positive"))
-        self.master.bind("<s>", lambda event: self.start_new_polyline("negative"))
-        self.master.bind("<d>", lambda event: self.delete_nearest_point())
-        self.master.bind("<q>", lambda event: self.on_close())
 
-        self.status_label = tk.Label(master, text="Current Phase: Positive", bg="lightgray")
+        self.status_label = tk.Label(master, text="Current Phase: Positive",
+                                     bg="lightgray")
         self.status_label.pack(fill=tk.X)
 
-        self.instructions_label = tk.Label(master, text=(
-            "Instructions:\n"
-            "1. Left-click to draw points.\n"
-            "2. Press 'A' to switch between positive and negative phases.\n"
-            "3. Press 'W' to start a new positive polyline.\n"
-            "4. Press 'S' to start a new negative polyline.\n"
-            "5. Press 'D' to delete the nearest point to the cursor.\n"
-            "6. Use mouse wheel or slider to navigate slices.\n"
-            "7. Press 'X', 'Y', or 'Z' to switch viewing axis.\n"
-            "8. Press 'Q' to quit and save."
-        ), bg="lightgray", justify=tk.LEFT)
-        self.instructions_label.pack(fill=tk.X, padx=5, pady=5)
+        instr = ("Instructions:\n"
+                 "• Left-click: add point\n"
+                 "• A: switch ± phase   W/S: new ± polyline   D: delete point\n"
+                 "• Mouse-wheel / slider: change slice   X/Y/Z: change axis\n"
+                 "• Q: quit + save")
+        tk.Label(master, text=instr, bg="lightgray",
+                 justify=tk.LEFT, anchor="w").pack(fill=tk.X)
 
         self.slice_buttons_frame = tk.Frame(master)
         self.slice_buttons_frame.pack(fill=tk.X)
 
-        self.scale = 2
-        self.shape = self.nii_data.shape[0]
-        
-        if initial_points:
-            self.load_initial_points(initial_points)
-        
-        self.update_image()
         self.add_close_button()
-        self.master.bind("<x>", lambda event: self.switch_axis(0))
-        self.master.bind("<y>", lambda event: self.switch_axis(1))
-        self.master.bind("<z>", lambda event: self.switch_axis(2))
 
-        self.master.bind("<MouseWheel>", self.on_mouse_wheel)
-        self.master.bind("<Button-4>", self.on_mouse_wheel)
-        self.master.bind("<Button-5>", self.on_mouse_wheel)
+        # -------------------------------------------------------------
+        # 4)  KEY / MOUSE BINDINGS (unchanged)
+        # -------------------------------------------------------------
+        self.canvas.bind("<Button-1>", self.add_point)
+        self.canvas.bind("<Button-3>", self.right_click_delete)
+
+        master.bind("<a>", lambda e: self.switch_phase())
+        master.bind("<w>", lambda e: self.start_new_polyline("positive"))
+        master.bind("<s>", lambda e: self.start_new_polyline("negative"))
+        master.bind("<d>", lambda e: self.delete_point())
+        master.bind("<q>", lambda e: self.on_close())
+
+        master.bind("<x>", lambda e: self.switch_axis(0))
+        master.bind("<y>", lambda e: self.switch_axis(1))
+        master.bind("<z>", lambda e: self.switch_axis(2))
+
+        master.bind("<MouseWheel>", self.on_mouse_wheel)
+        master.bind("<Button-4>",  self.on_mouse_wheel)
+        master.bind("<Button-5>",  self.on_mouse_wheel)
+
+        # -------------------------------------------------------------
+        # 5)  INITIAL DRAW
+        # -------------------------------------------------------------
+        self.update_image()
 
     def load_initial_points(self, initial_points):
         for phase in ['positive', 'negative']:
@@ -141,7 +167,7 @@ class NiiImageEditor:
         else:
             slice_2d = self.nii_data[:, :, self.current_slice_index]
         img = Image.fromarray(slice_2d).convert("L")
-        img = img.resize((self.shape * self.scale, self.shape * self.scale), Image.LANCZOS)
+        img = img.resize((self.canvas_w, self.canvas_h), Image.NEAREST)
         self.img_tk = ImageTk.PhotoImage(img)
         self.canvas.create_image(0, 0, anchor="nw", image=self.img_tk)
         self.draw_polylines()
