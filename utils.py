@@ -51,6 +51,20 @@ def padtocube(array):
     return padded_array
 
 
+def remove_symmetrical_cube_padding(original_shape, padded_array):
+    x_start = (padded_array.shape[0] - original_shape[0]) // 2 if padded_array.shape[0] > original_shape[0] else 0
+    y_start = (padded_array.shape[1] - original_shape[1]) // 2 if padded_array.shape[1] > original_shape[1] else 0
+    z_start = (padded_array.shape[2] - original_shape[2]) // 2 if padded_array.shape[2] > original_shape[2] else 0
+    
+    unpadded_array = padded_array[
+        x_start:x_start + original_shape[0],
+        y_start:y_start + original_shape[1],
+        z_start:z_start + original_shape[2]
+    ]
+
+    return unpadded_array
+
+
 def extract_dicom_metadata(folder):
     filepaths = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.dcm')]
     filepaths.sort()

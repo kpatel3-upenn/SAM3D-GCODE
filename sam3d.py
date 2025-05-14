@@ -7,11 +7,11 @@ import math
 import time
 import tqdm
 import argparse
-import RescaleMaskedDICOM
 import RegionBasedVariableDensityAlgorithm
 import DicomToGCode
-from VariableDensityAlgorithms import save_dicom_series_removing_empty_slices, load_dicom_series
-from two_dim_level_set_evolution import apply_level_set_evolution_mask
+from VariableDensityAlgorithms import save_dicom_series_removing_empty_slices, load_dicom_series, \
+    load_dicom_series_sitk, save_dicom_series
+from low_density_region_generating_algorithms import otsu_low_density, clean_binary, force_high_density_shell
 
 from segment_anything import sam_model_registry, SamPredictor
 
@@ -216,8 +216,8 @@ def main():
         else:
             print("Invalid input. Please enter one of (voxsize, resolution, dilation, erosion, fillholes), (evaluate), or (done) if finished.")
     
-    mask = recomposition.voxel_density_mask(pcd, vox_size = voxsize, resolution = resolution, dilation = dilation, erosion = erosion, fill_holes = fillholes, distance=distance)
-        
+    segmentation_mask = recomposition.voxel_density_mask(pcd, vox_size = voxsize, resolution = resolution, dilation = dilation, erosion = erosion, fill_holes = fillholes, distance=distance)
+
     print('Variable Density Printing Pipeline Started')
     # All of the intermediate files are going to be stored in a temp folder in the output path
     # The temp folder will be deleted at the end of the function
@@ -227,12 +227,39 @@ def main():
     os.makedirs(temp_path_for_intermediates)
     print('Temporary folder created')
 
-    print('Creating density regions')
-    low_density_roi = apply_level_set_evolution_mask(mask)
+    dicom_path = args.path    
+
+    original_dicom_array, original_dicom_series = load_dicom_series(dicom_path)
+    original_dicom_series_sitk = load_dicom_series_sitk(dicom_path)
+    print('Dicom series loaded')
+    
+    if segmentation_mask  != original_dicom_array.shape:
+        segmentation_mask = utils.remove_symmetrical_cube_padding(original_dicom_array.shape, segmentation_mask)
+
+    save_dicom_series(segmentation_mask, original_dicom_series, temp_path_for_intermediates + '/segmentation_mask')
+    print('Segmentation mask applied')
+
+    # Run Otsu's algorithm to get low density region
+    otsu_mask = otsu_low_density(volume=original_dicom_array, mask=segmentation_mask)
+    save_dicom_series(otsu_mask, original_dicom_series, temp_path_for_intermediates + '/otsu_mask')
+    print('Otsu mask computed')
+    
+    otsu_mask_with_preserved_shell = force_high_density_shell(
+        low_density_mask=otsu_mask,
+        roi_mask=segmentation_mask,
+        shell_mm=2,
+        voxel_spacing=original_dicom_series_sitk.GetSpacing()
+    )
+    print('Otsu mask with preserved shell computed')
+
+    low_density_roi = clean_binary(otsu_mask_with_preserved_shell)
+    save_dicom_series(low_density_roi, original_dicom_series, temp_path_for_intermediates + '/low_density_roi')
+    print('low density roi computed')
+
     region_based_roi = RegionBasedVariableDensityAlgorithm.create_region_based_variable_density_roi_fractional_skip_with_block_size(
-            mask,
-            RescaleMaskedDICOM.simple_rescale_dicom_array_to_16bit(low_density_roi),
-            block_size=2
+        segmentation_mask,
+        low_density_roi,
+        block_size=2
     )
     print('Region based roi computed')
 
@@ -249,9 +276,6 @@ def main():
     DicomToGCode.generate_params_xml(params_path, region_based_roi_output_path, gcode_filename)
     dicom_to_gcode_path = '/Users/krunalpatel/Medicine/Rajapakse_Lab/BioPrinting/dicom2gcode/'
     DicomToGCode.call_dicom_2_gcode_java(dicom_to_gcode_path, params_path)
-
-    # Delete temp folder
-    # os.system(f'rm -r {temp_path_for_intermediates}')
 
     elapsed = int(time.time()-starttime)
     print(f"Total time elapsed: {elapsed//60} minutes, {elapsed%60} seconds.")

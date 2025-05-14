@@ -2,7 +2,7 @@ import numpy as np
 import os
 import pydicom
 from RescaleMaskedDICOM import simple_rescale_dicom_array_to_16bit
-
+import SimpleITK as sitk
 
 def load_dicom_series(folder_path):
     dicom_files = [pydicom.dcmread(os.path.join(folder_path, f), force=True) for f in os.listdir(folder_path)]
@@ -38,6 +38,13 @@ def save_dicom_series_removing_empty_slices(dicom_array, original_series, output
             dicom_file.save_as(os.path.join(output_folder, f"slice_{saved_index}.dcm"))
             saved_index += 1
         curr_index += 1
+
+
+def load_dicom_series_sitk(dicom_folder):
+    reader = sitk.ImageSeriesReader()
+    reader.SetFileNames(reader.GetGDCMSeriesFileNames(dicom_folder))
+    ct_img = reader.Execute()    
+    return ct_img
 
 
 def main():
