@@ -12,6 +12,7 @@ import DicomToGCode
 from VariableDensityAlgorithms import save_dicom_series_removing_empty_slices, load_dicom_series, \
     load_dicom_series_sitk, save_dicom_series
 from low_density_region_generating_algorithms import otsu_low_density, clean_binary, force_high_density_shell
+from Voxels2GCode import GCodeWriter, get_dicom_resolution
 
 from segment_anything import sam_model_registry, SamPredictor
 
@@ -30,6 +31,9 @@ import recomposition
 import reprompting3d
 import post_processing_windows
 import matplotlib
+
+
+DEBUG_MODE = True
 
 print(matplotlib.get_backend())
 matplotlib.use('qtagg')
@@ -92,10 +96,10 @@ def main():
     # Select device
     if torch.cuda.is_available():                     # NVIDIA
         device = "cuda"
-    elif torch.backends.mps.is_available():           # Apple-Silicon
-        device = "mps"
-        os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-        torch.backends.mps.fallback_enabled = True
+    # elif torch.backends.mps.is_available():           # Apple-Silicon
+    #     device = "mps"
+    #     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+    #     torch.backends.mps.fallback_enabled = True
     else:                                             # CPU fallback
         device = "cpu"
     
@@ -145,8 +149,8 @@ def main():
                 prompt = [pos_intersections, neg_intersections]
                 points, boundary = segmentfunction.segment(predictor, scale_transform.normalize(slice_transformed_img), prompt)
                 
-                undersample = matrix_shape[0]//int(args.slices)
-                # undersample = 1
+                # undersample = matrix_shape[0]//int(args.slices)
+                undersample = 1
                 undersampled_points = np.zeros_like(points)
                 undersampled_points[::undersample, ::undersample] = points[::undersample, ::undersample]
                 
@@ -159,6 +163,8 @@ def main():
     points = np.array([p for point in allpoints for p in point])
 
     points = np.asarray([pt for sub in allpoints for pt in sub], dtype=np.float64).reshape(-1, 3)
+
+    print("number of points: ", str(len(points)))
 
     # pointcloud refinement loop
     print('point cloud refinement')
@@ -173,8 +179,12 @@ def main():
     elif args.rotations == "dodeca":
         downsample, outliers, n_neighbors, radius, iterations = 1, 1, 40, 0.02, 4  # Set default values
     voxsize, resolution, dilation, erosion, fillholes, distance = 1/image.shape[0], image.shape[0], 0, 0, True, 0.01  # Set default values
-    
-    pcd = recomposition.create_point_cloud(points, visualize=True, downsample=downsample, outliers=outliers, n_neighbors=n_neighbors, radius=radius)
+        
+    if DEBUG_MODE:
+        pcd = recomposition.create_point_cloud(points, visualize=False, downsample=downsample, outliers=outliers, n_neighbors=n_neighbors, radius=radius)
+        print(f"Created point cloud with {len(pcd.points)} points.")
+    else:
+        pcd = recomposition.create_point_cloud(points, visualize=True, downsample=downsample, outliers=outliers, n_neighbors=n_neighbors, radius=radius)
 
     while running:
         user_input = input("Enter a command (evaluate, downsample, outliers, done): ").lower()  # Convert input to lowercase
@@ -233,7 +243,7 @@ def main():
     original_dicom_series_sitk = load_dicom_series_sitk(dicom_path)
     print('Dicom series loaded')
     
-    if segmentation_mask  != original_dicom_array.shape:
+    if segmentation_mask.shape != original_dicom_array.shape:
         segmentation_mask = utils.remove_symmetrical_cube_padding(original_dicom_array.shape, segmentation_mask)
 
     save_dicom_series(segmentation_mask, original_dicom_series, temp_path_for_intermediates + '/segmentation_mask')
@@ -269,13 +279,12 @@ def main():
 
     print('Final DICOM saved')
 
-    print('Calling Dicom2GCode')
+    print('Executing Voxels2GCode')
     # Generate GCODE using DicomToGCode
-    params_path = '/Users/krunalpatel/Medicine/Rajapakse_Lab/BioPrinting/dicom2gcode/params.xml'
-    gcode_filename = 'autogen_output.gcode'
-    DicomToGCode.generate_params_xml(params_path, region_based_roi_output_path, gcode_filename)
-    dicom_to_gcode_path = '/Users/krunalpatel/Medicine/Rajapakse_Lab/BioPrinting/dicom2gcode/'
-    DicomToGCode.call_dicom_2_gcode_java(dicom_to_gcode_path, params_path)
+    x_res, y_res, z_res = get_dicom_resolution(dicom_path)
+    gcode_writer = GCodeWriter(region_based_roi, x_res, y_res, z_res, args.outdir + '/output.gcode') 
+    gcode_writer.run()
+    print('GCODE generated')
 
     elapsed = int(time.time()-starttime)
     print(f"Total time elapsed: {elapsed//60} minutes, {elapsed%60} seconds.")

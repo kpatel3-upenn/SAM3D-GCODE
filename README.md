@@ -18,6 +18,9 @@ The main script is sam3d.py. This script accepts a number of arguments, which ca
 
 If running with the defaults, the only argument that needs to be supplied is --path / -p, the path to a stack of 2D images for the volume to be segmented.
 
+Sample command:
+python sam3d.py -p /Users/krunalpatel/Medicine/Rajapakse_Lab/BioPrinting/dicom2gcode/data/00000304_copy -s 32 -o /Users/krunalpatel/Medicine/Rajapakse_Lab/DICOM_DATASET/Variable_Density_Intermediates/00000304 --datatype dcm
+
 ## Contact
 
 Please reach out to tjchan@seas.upenn.edu for questions about installing or running code. Please also keep in mind that this is a work in progress, and changes may be made in the future.
